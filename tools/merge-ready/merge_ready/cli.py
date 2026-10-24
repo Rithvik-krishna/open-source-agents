@@ -19,6 +19,18 @@ from merge_ready.report import (
 )
 
 
+def safe_print(text: str) -> None:
+    """Print text safely across different terminal encodings (e.g. Windows cp1252)."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        try:
+            sys.stdout.buffer.write(text.encode("utf-8", errors="replace") + b"\n")
+            sys.stdout.buffer.flush()
+        except Exception:
+            print(text.encode("ascii", errors="backslashreplace").decode("ascii"))
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct CLI argument parser for MergeReady."""
     parser = argparse.ArgumentParser(
@@ -114,7 +126,7 @@ def run_check(
             sys.stderr.write(f"Error writing report to '{output_file}': {e}\n")
             return 2
     else:
-        print(output_text)
+        safe_print(output_text)
 
     return report.exit_code(strict=strict)
 
