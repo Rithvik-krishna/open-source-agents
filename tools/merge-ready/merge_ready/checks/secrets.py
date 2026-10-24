@@ -24,7 +24,7 @@ KEY_CONTEXT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-UUID_PATTERN = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+UUID_PATTERN = re.compile(r"^(?:urn:uuid:)?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 HEX_HASH_PATTERN = re.compile(r"^[0-9a-fA-F]{32,64}$")
 
 PLACEHOLDER_SUBSTRINGS = [
@@ -41,6 +41,10 @@ PLACEHOLDER_SUBSTRINGS = [
     "sample",
     "none",
     "null",
+    "test_key",
+    "changeme",
+    "my_key",
+    "my-key",
 ]
 
 FORBIDDEN_TRACKED_EXTENSIONS = {".sqlite", ".db", ".pyc"}
@@ -72,7 +76,15 @@ def redact_secret(val: str) -> str:
 
 def is_placeholder(val: str) -> bool:
     """Check if string is an obvious documentation or test placeholder."""
-    val_lower = val.lower()
+    val_lower = val.lower().strip("'\"")
+    if val_lower.startswith("<") and val_lower.endswith(">"):
+        return True
+    if val_lower.startswith("${") and val_lower.endswith("}"):
+        return True
+    if val_lower.startswith("$"):
+        return True
+    if val_lower.startswith("[") and val_lower.endswith("]"):
+        return True
     return any(p in val_lower for p in PLACEHOLDER_SUBSTRINGS)
 
 

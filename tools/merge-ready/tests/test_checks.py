@@ -220,3 +220,233 @@ def test_scope_diff_validation_with_git(tmp_path: Path):
     report_bad = run_all_checks(ctx_bad)
     assert report_bad.results["P01"].verdict == Verdict.FAIL
     assert any("CONTRIBUTING.md" in f.path for f in report_bad.results["P01"].findings)
+
+
+def test_false_positive_placeholder_secrets(tmp_path: Path):
+    """S01: Ensure template placeholders and obvious fake values do not trigger secret findings."""
+    proj = tmp_path / "tools" / "test-placeholders"
+    proj.mkdir(parents=True)
+    (proj / "README.md").write_text("# Test Placeholders\n## Overview\nTest\n## License\nMIT\n")
+    (proj / ".gitignore").write_text(".venv/\n")
+    (proj / ".env.example").write_text(
+        "# API_KEY=your_gemini_api_key_here\n"
+        "# SECRET_TOKEN=<your-secret-token>\n"
+        "# CLIENT_SECRET=${CLIENT_SECRET_PLACEHOLDER}\n"
+    )
+    (proj / "requirements.txt").write_text("pytest\n")
+    (proj / "main.py").write_text(
+        '# Documented and placeholder assignments\n'
+        'DEFAULT_PLACEHOLDER = "your_api_key_here"\n'
+        'DUMMY_KEY = "dummy_token_12345678901234567890"\n'
+        'SAMPLE_ENV = "<INSERT_KEY_HERE>"\n'
+        'CONFIG_NONE = "none"\n'
+    )
+
+    ctx = ProjectContext(project_path=proj)
+    report = run_all_checks(ctx)
+    assert report.results["S01"].verdict == Verdict.PASS, f"Placeholders triggered false positive: {report.results['S01'].findings}"
+
+
+def test_false_positive_uuids_and_git_shas(tmp_path: Path):
+    """S01: Ensure UUIDs, urn:uuid, and Git commit hashes do not trigger secret findings."""
+    proj = tmp_path / "tools" / "test-identifiers"
+    proj.mkdir(parents=True)
+    (proj / "README.md").write_text("# Test Identifiers\n## Overview\nTest\n## License\nMIT\n")
+    (proj / ".gitignore").write_text(".venv/\n")
+    (proj / ".env.example").write_text("# API_KEY=placeholder\n")
+    (proj / "requirements.txt").write_text("pytest\n")
+    (proj / "main.py").write_text(
+        '# Standard UUIDs and Git SHAs\n'
+        'user_id = "c9bf9e57-1685-4c89-bafb-ff5af830be8a"\n'
+        'urn_uuid = "urn:uuid:6ba7b810-9dad-11d1-80b4-00c04fd430c8"\n'
+        'git_commit_sha = "b0ad2a403b7dc731f3b5e2d5e9ba0fe07f6d4b36"\n'
+        'sha256_hash = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"\n'
+        'auth_token = "123e4567-e89b-12d3-a456-426614174000"\n'
+    )
+
+    ctx = ProjectContext(project_path=proj)
+    report = run_all_checks(ctx)
+    assert report.results["S01"].verdict == Verdict.PASS, f"Identifiers triggered false positive: {report.results['S01'].findings}"
+
+
+def test_false_positive_normal_unicode_multilingual_and_emojis():
+    """A02: Ensure international text, legitimate RTL marks, and composite emojis do not trigger errors."""
+    # Multilingual text
+    intl_text = (
+        "English: Hello World!\n"
+        "French: Déjà vu au café.\n"
+        "German: Übergrößenträger.\n"
+        "Spanish: ¿Cómo estás, señor?\n"
+        "Hebrew with LTR/RTL marks: \u200Eשלום עולם!\u200F\n"
+        "Arabic: مرحبا بالعالم\n"
+        "Japanese: こんにちは世界\n"
+        "Hindi: नमस्ते दुनिया\n"
+        "Mathematical: ∀x ∈ ℝ, x² ≥ 0.\n"
+    )
+    intl_findings = scan_unicode(intl_text)
+    intl_errors = [f for f in intl_findings if f[0] == Severity.ERROR]
+    assert len(intl_errors) == 0, f"Normal multilingual text triggered Unicode error: {intl_errors}"
+
+    # Composite emojis with Zero-Width Joiner (U+200D)
+    emoji_text = "Family: 👨‍👩‍👧‍👦, Technologist: 👩‍💻, Rainbow Flag: 🏳️‍🌈, Thumbs up: 👍"
+    emoji_findings = scan_unicode(emoji_text)
+    emoji_errors = [f for f in emoji_findings if f[0] == Severity.ERROR]
+    assert len(emoji_errors) == 0, f"Legitimate emojis triggered Unicode error: {emoji_errors}"
+
+
+def test_false_positive_commented_environment_variables(tmp_path: Path):
+    """E01: Ensure commented-out variables in .env.example are accepted as documented."""
+    proj = tmp_path / "tools" / "test-commented-env"
+    proj.mkdir(parents=True)
+    (proj / "README.md").write_text(
+        "# Test Commented Env\n"
+        "## Overview\nTest\n"
+        "## Configuration & Environment Variables\n"
+        "| Variable Name | Required | Default | Description |\n"
+        "| :--- | :--- | :--- | :--- |\n"
+        "| `GEMINI_API_KEY` | Yes | None | LLM API Key |\n"
+        "| `DB_PORT` | No | 5432 | Database port |\n"
+        "## License\nMIT\n"
+    )
+    (proj / ".gitignore").write_text(".venv/\n")
+    # Commented out in .env.example
+    (proj / ".env.example").write_text(
+        "# LLM Configuration:\n"
+        "# GEMINI_API_KEY=your_key_here\n"
+        "# DB_PORT=5432\n"
+    )
+    (proj / "requirements.txt").write_text("pytest\n")
+    (proj / "main.py").write_text(
+        "import os\n"
+        "api_key = os.getenv('GEMINI_API_KEY')\n"
+        "port = os.environ.get('DB_PORT', '5432')\n"
+    )
+
+    ctx = ProjectContext(project_path=proj)
+    report = run_all_checks(ctx)
+    assert report.results["E01"].verdict == Verdict.PASS, f"Commented env vars triggered error: {report.results['E01'].findings}"
+
+
+def test_false_positive_standard_library_and_local_imports(tmp_path: Path):
+    """R01: Ensure standard-library and local intra-project imports do not trigger missing dependency warnings."""
+    proj = tmp_path / "tools" / "test-imports"
+    proj.mkdir(parents=True)
+    (proj / "README.md").write_text("# Test Imports\n## Overview\nTest\n## License\nMIT\n")
+    (proj / ".gitignore").write_text(".venv/\n")
+    (proj / ".env.example").write_text("# API_KEY=placeholder\n")
+    (proj / "requirements.txt").write_text("pytest>=8.0.0\n")
+
+    # Local package
+    pkg_dir = proj / "helper_pkg"
+    pkg_dir.mkdir()
+    (pkg_dir / "__init__.py").write_text("def assist(): pass\n")
+
+    (proj / "main.py").write_text(
+        "import sys\n"
+        "import os\n"
+        "import json\n"
+        "import math\n"
+        "import re\n"
+        "import pathlib\n"
+        "import typing\n"
+        "import dataclasses\n"
+        "import argparse\n"
+        "import tomllib\n"
+        "import subprocess\n"
+        "from helper_pkg import assist\n"
+    )
+
+    ctx = ProjectContext(project_path=proj)
+    report = run_all_checks(ctx)
+    assert report.results["R01"].verdict == Verdict.PASS, f"Stdlib/local imports triggered warning: {report.results['R01'].findings}"
+
+
+def test_false_positive_legitimate_loops_and_bounded_whiles(tmp_path: Path):
+    """A01: Ensure for-loops, while-loops with counter/break/return, and non-model whiles do not trigger A01."""
+    proj = tmp_path / "tools" / "test-loops"
+    proj.mkdir(parents=True)
+    (proj / "README.md").write_text("# Test Loops\n## Overview\nTest\n## License\nMIT\n")
+    (proj / ".gitignore").write_text(".venv/\n")
+    (proj / ".env.example").write_text("# API_KEY=placeholder\n")
+    (proj / "requirements.txt").write_text("pytest\n")
+    (proj / "main.py").write_text(
+        "class MockAgent:\n"
+        "    def chat(self, prompt):\n"
+        "        return 'resp'\n"
+        "\n"
+        "def process():\n"
+        "    agent = MockAgent()\n"
+        "    # 1. Bounded for loop\n"
+        "    for i in range(5):\n"
+        "        agent.chat('hello')\n"
+        "    # 2. While loop with comparison test\n"
+        "    count = 0\n"
+        "    while count < 3:\n"
+        "        agent.chat('step')\n"
+        "        count += 1\n"
+        "    # 3. while True with explicit break\n"
+        "    while True:\n"
+        "        res = agent.chat('query')\n"
+        "        if res:\n"
+        "            break\n"
+        "    # 4. while True with explicit return\n"
+        "    while True:\n"
+        "        return agent.chat('final')\n"
+    )
+
+    ctx = ProjectContext(project_path=proj)
+    report = run_all_checks(ctx)
+    assert report.results["A01"].verdict == Verdict.PASS, f"Legitimate loops triggered A01 warning: {report.results['A01'].findings}"
+
+
+def test_secret_redaction_across_all_report_formats(tmp_path: Path):
+    """S01 & Reporting: Ensure raw credentials are never leaked in terminal, json, or markdown reports."""
+    from merge_ready.report import format_terminal, format_json, format_markdown, format_github_annotations
+
+    proj = tmp_path / "tools" / "leak-test"
+    proj.mkdir(parents=True)
+    (proj / "README.md").write_text("# Leak Test\n## Overview\nTest\n## License\nMIT\n")
+    (proj / ".gitignore").write_text(".venv/\n")
+    (proj / ".env.example").write_text("# API_KEY=placeholder\n")
+    (proj / "requirements.txt").write_text("pytest\n")
+
+    # Real-shaped fake Google key
+    raw_secret = "AIza" + "SyB8c7d6e5f4g3h2j1k0l9m8n7b6v5c4x3z"
+    (proj / "main.py").write_text(f'API_KEY = "{raw_secret}"\n')
+
+    ctx = ProjectContext(project_path=proj)
+    report = run_all_checks(ctx)
+    assert report.results["S01"].verdict == Verdict.FAIL
+
+    term_out = format_terminal(report)
+    json_out = format_json(report)
+    md_out = format_markdown(report)
+    gh_out = format_github_annotations(report)
+
+    for output_name, text in [("terminal", term_out), ("json", json_out), ("markdown", md_out), ("github", gh_out)]:
+        assert raw_secret not in text, f"Raw secret leaked in {output_name} report!"
+        assert "[REDACTED]" in text or output_name == "github", f"Redacted tag missing in {output_name} report!"
+
+
+def test_static_checks_never_execute_inspected_code(tmp_path: Path):
+    """Safety: Verify that MergeReady never executes, imports, or runs inspected contributor code."""
+    proj = tmp_path / "tools" / "untrusted-code"
+    proj.mkdir(parents=True)
+    (proj / "README.md").write_text("# Untrusted Code\n## Overview\nTest\n## License\nMIT\n")
+    (proj / ".gitignore").write_text(".venv/\n")
+    (proj / ".env.example").write_text("# API_KEY=placeholder\n")
+    (proj / "requirements.txt").write_text("pytest\n")
+
+    sentinel_file = proj / "SENTINEL_EXECUTED.txt"
+    # If this code were executed (via import, eval, exec, or python run), it would create the sentinel file
+    (proj / "malicious_script.py").write_text(
+        f"import pathlib\n"
+        f"pathlib.Path(r'{sentinel_file}').write_text('EXECUTED_FAIL')\n"
+    )
+
+    ctx = ProjectContext(project_path=proj)
+    report = run_all_checks(ctx)
+
+    # Prove that the code was never executed
+    assert not sentinel_file.exists(), "CRITICAL SAFETY VIOLATION: Contributor code was executed during validation!"
+
