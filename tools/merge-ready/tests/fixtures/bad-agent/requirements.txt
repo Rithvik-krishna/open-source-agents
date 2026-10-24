@@ -1,0 +1,2 @@
+# Notice pyyaml / yaml is missing here!
+requests>=2.28.0
