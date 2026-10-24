@@ -7,7 +7,7 @@ import subprocess
 from typing import Any
 
 from merge_ready.model import Finding, RuleResult, Severity, Verdict
-from merge_ready.project import ProjectContext
+from merge_ready.project import MAX_FILE_COUNT, MAX_FILE_SIZE, ProjectContext
 
 KEBAB_CASE_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 GENERIC_NAMES = {
@@ -185,7 +185,76 @@ def check_f01(ctx: ProjectContext, config: dict[str, Any]) -> RuleResult:
             )
         )
 
+    # Defensive resource & security limits
+    if ctx.limit_exceeded_file_count:
+        findings.append(
+            Finding(
+                rule_id=rule_id,
+                severity=Severity.ERROR,
+                message=f"Project exceeds maximum allowed file count ({MAX_FILE_COUNT} files). Scanning truncated to prevent resource exhaustion.",
+                path=ctx.slug,
+                evidence=f"Directory traversal halted at {MAX_FILE_COUNT} files limit.",
+                fix="Remove extraneous files, build artifacts, test caches, or bloated directories from your contribution.",
+                source_rule=source,
+            )
+        )
+
+    for oversized_path, file_size in ctx.oversized_files:
+        limit_mb = MAX_FILE_SIZE // (1024 * 1024)
+        findings.append(
+            Finding(
+                rule_id=rule_id,
+                severity=Severity.ERROR,
+                message=f"File '{oversized_path}' ({file_size} bytes) exceeds the maximum allowed file size of {limit_mb} MB.",
+                path=oversized_path,
+                evidence=f"File size {file_size} bytes exceeds {MAX_FILE_SIZE} bytes limit.",
+                fix="Remove oversized data, binaries, or model weights. Store large assets externally.",
+                source_rule=source,
+            )
+        )
+
+    for symlink_path, target_path in ctx.rejected_symlinks:
+        findings.append(
+            Finding(
+                rule_id=rule_id,
+                severity=Severity.ERROR,
+                message=f"Symlink '{symlink_path}' resolves to external path '{target_path}' outside project boundary.",
+                path=symlink_path,
+                evidence=f"Potential directory traversal rejected: '{symlink_path}' -> '{target_path}'",
+                fix="Remove symlinks pointing outside the dedicated project directory.",
+                source_rule=source,
+            )
+        )
+
+    for unreadable_path, err_msg in ctx.unreadable_files:
+        findings.append(
+            Finding(
+                rule_id=rule_id,
+                severity=Severity.ERROR,
+                message=f"File '{unreadable_path}' could not be inspected: {err_msg}",
+                path=unreadable_path,
+                evidence=err_msg,
+                fix="Ensure file permissions allow reading and file is not locked.",
+                source_rule=source,
+            )
+        )
+
+    if getattr(ctx, "config_errors", None):
+        for err_msg in ctx.config_errors:
+            findings.append(
+                Finding(
+                    rule_id=rule_id,
+                    severity=Severity.ERROR,
+                    message=f"Configuration file error: {err_msg}",
+                    path="rules.toml",
+                    evidence=err_msg,
+                    fix="Fix syntax or schema errors in rules.toml.",
+                    source_rule="rules.toml",
+                )
+            )
+
     if findings:
-        return RuleResult(rule_id=rule_id, name=name, verdict=Verdict.FAIL, findings=findings)
+        verdict = Verdict.ERROR if getattr(ctx, "config_errors", None) else Verdict.FAIL
+        return RuleResult(rule_id=rule_id, name=name, verdict=verdict, findings=findings)
 
     return RuleResult(rule_id=rule_id, name=name, verdict=Verdict.PASS)

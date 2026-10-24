@@ -108,14 +108,18 @@ def run_check(
         sys.stderr.write(f"Operational error running validation checks: {e}\n")
         return 2
 
-    if output_format == "json":
-        output_text = format_json(report)
-    elif output_format == "markdown":
-        output_text = format_markdown(report)
-    elif output_format == "github":
-        output_text = format_github_annotations(report)
-    else:
-        output_text = format_terminal(report)
+    try:
+        if output_format == "json":
+            output_text = format_json(report)
+        elif output_format == "markdown":
+            output_text = format_markdown(report)
+        elif output_format == "github":
+            output_text = format_github_annotations(report)
+        else:
+            output_text = format_terminal(report)
+    except Exception as e:
+        sys.stderr.write(f"Operational error generating {output_format} report: {e}\n")
+        return 2
 
     if output_file:
         try:
@@ -126,34 +130,42 @@ def run_check(
             sys.stderr.write(f"Error writing report to '{output_file}': {e}\n")
             return 2
     else:
-        safe_print(output_text)
+        try:
+            safe_print(output_text)
+        except Exception as e:
+            sys.stderr.write(f"Error printing report: {e}\n")
+            return 2
 
     return report.exit_code(strict=strict)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     """CLI entry point for merge-ready."""
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    try:
+        parser = build_parser()
+        args = parser.parse_args(argv)
 
-    if not args.command:
-        # If run directly with a path without "check", support ergonomics: merge-ready <path>
-        if argv and len(argv) >= 1 and not argv[0].startswith("-"):
-            # synthesize check command
-            return run_check(project_path_str=argv[0])
-        parser.print_help(sys.stderr)
+        if not args.command:
+            # If run directly with a path without "check", support ergonomics: merge-ready <path>
+            if argv and len(argv) >= 1 and not argv[0].startswith("-"):
+                # synthesize check command
+                return run_check(project_path_str=argv[0])
+            parser.print_help(sys.stderr)
+            return 2
+
+        if args.command == "check":
+            return run_check(
+                project_path_str=args.project_path,
+                base_ref=args.base,
+                output_format=args.format,
+                output_file=args.output,
+                strict=args.strict,
+            )
+
         return 2
-
-    if args.command == "check":
-        return run_check(
-            project_path_str=args.project_path,
-            base_ref=args.base,
-            output_format=args.format,
-            output_file=args.output,
-            strict=args.strict,
-        )
-
-    return 2
+    except Exception as e:
+        sys.stderr.write(f"Unexpected CLI error: {e}\n")
+        return 2
 
 
 if __name__ == "__main__":

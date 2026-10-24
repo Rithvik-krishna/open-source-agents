@@ -13,7 +13,8 @@
 ### Key Features
 - **16 Repository-Specific Checks**: Validates folder structure (`agents/` vs `tools/`), kebab-case naming, template residue, required documentation sections, zero-secrets policy, diff scope, environment drift, dependency manifests, and agent safety heuristics.
 - **Evidence-Backed Verdict Model**: Emits four explicit verdicts (`PASS`, `FAIL`, `WARN`, `SKIP`, `N/A`) inspired by Kibble, clearly differentiating checked passes from uncheckable environments.
-- **Agent Guardrails & Static Safety**: Detects hidden Unicode backdoors (Trojan Source CVE-2021-42574, bidi overrides, tag characters), unbounded execution loops around model calls, and undisclosed high-impact tool capabilities (e.g. `subprocess`).
+- **Agent Guardrails & Static Safety**: Detects Trojan Source bidirectional overrides (`U+202A`–`U+202E`, `U+2066`–`U+2069`, CVE-2021-42574) that deceive human reviewers, Plane 14 Unicode tag characters (`U+E0000`–`U+E007F`) used for invisible prompt injection against LLMs, unbounded execution loops around model calls, and undisclosed high-impact tool capabilities (e.g. `subprocess`).
+- **Fail-Safe Resource Limits**: Enforces strict bounds (`MAX_FILE_COUNT = 500`, `MAX_FILE_SIZE = 5 MB`, path-traversal symlink rejection). Exceeding bounds triggers explicit `ERROR` findings under `F01`—MergeReady fails closed and never silently omits uninspected files.
 - **Diff Scope & Index Table Validation**: Validates Git three-dot diffs (`<base>...HEAD`) to guarantee that contributions never modify unrelated repository files.
 - **Multi-Format Reporting**: Produces human-readable terminal output, strictly valid JSON for automation, GitHub-flavored Markdown for PR summaries, and inline GitHub Actions annotations (`::error`, `::warning`).
 - **Zero Secrets Disclosure**: Automatically redacts candidate credentials, keys, and tokens in evidence strings and reports.
@@ -186,9 +187,11 @@ pytest tools/merge-ready/tests -v
 
 The test suite covers:
 - Verification of golden-clean contributions (`good-tool`).
-- Detection of intentional rule violations (`bad-agent`).
+- Detection of intentional rule violations via runtime-constructed temporary fixtures (avoiding committed secrets, databases, or bidi characters).
 - Negative controls (UUIDs, Git commit SHAs, template placeholders).
-- Hidden Unicode tag decoding and bidi override traps.
+- Decoupled detection of Trojan Source BiDi (CVE-2021-42574) and Plane 14 tag prompt injections.
+- Fail-safe enforcement of scan limits (`MAX_FILE_COUNT > 500`, `MAX_FILE_SIZE > 5 MB`, path-traversal symlinks).
+- Deep scanning across nested fixture directories without blanket exemptions.
 - Three-dot Git merge-base scope enforcement.
 - CLI argument parsing, output format stability, and exit codes.
 
@@ -210,15 +213,21 @@ MergeReady implements strict defensive guardrails:
 1. **Untrusted Code Isolation (No Code Execution)**:
    - MergeReady **never imports, executes, or installs** the code under review.
    - All code analysis is performed via static Abstract Syntax Trees (AST) or token parsing.
-2. **Denial-of-Service (DoS) Guardrails**:
+2. **Denial-of-Service (DoS) Guardrails & Fail-Safe Scans**:
    - Caps individual file read size at **5 MB** (`MAX_FILE_SIZE`).
    - Limits directory scanning to **500 files** (`MAX_FILE_COUNT`).
    - Refuses symlinks that resolve outside the project directory boundary.
-3. **Zero Secrets Disclosure**:
+   - **Fail-Closed Guarantee**: Any project exceeding file count, file size, or symlink boundaries triggers explicit `ERROR` findings under `F01` and fails validation. MergeReady never silently drops files or declares truncated scans clean.
+3. **Deceptive Unicode Defense**:
+   - Trojan Source (`U+202A`–`U+202E`, `U+2066`–`U+2069`, CVE-2021-42574): Prevents visual reordering attacks that mislead human code reviewers.
+   - Plane 14 Unicode Tags (`U+E0000`–`U+E007F`): Detects and decodes invisible ASCII character streams used for prompt injection attacks against LLMs.
+4. **Zero Secrets Disclosure**:
    - When candidate credentials or high-entropy tokens are detected, MergeReady redacts sensitive values (e.g. `AIza...XXXX [REDACTED]`) before rendering terminal output, JSON, or Markdown reports.
-4. **Read-Only Non-Destructive Operation**:
+5. **Committed Fixture Hygiene**:
+   - Test suites construct security-sensitive fixtures dynamically in temporary `tmp_path` directories at runtime using string concatenation and `chr()`, ensuring no API keys, bidi overrides, or binary SQLite databases are committed into Git.
+6. **Read-Only Non-Destructive Operation**:
    - MergeReady never alters repository files, never writes to Git history, and never modifies the Git index during validation.
-5. **Safe CI Execution**:
+7. **Safe CI Execution**:
    - The provided GitHub Actions workflow uses the standard `pull_request` event with read-only permissions (`permissions: contents: read`). It avoids `pull_request_target` to eliminate fork-hijacking attack vectors.
 
 ---
@@ -228,6 +237,13 @@ MergeReady implements strict defensive guardrails:
 - [ ] AST parsing support for TypeScript and Go agents.
 - [ ] Integration with Gitleaks binary when locally available for extended secret heuristics.
 - [ ] Automated suggestion of missing index row markdown snippet.
+
+---
+
+## Contributor & Attribution
+
+- **Author / Contributor**: [@Rithvik-krishna](https://github.com/Rithvik-krishna)
+- **Repository**: [open-source-agents](https://github.com/gdgcblr/open-source-agents)
 
 ---
 

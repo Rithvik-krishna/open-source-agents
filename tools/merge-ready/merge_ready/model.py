@@ -25,10 +25,18 @@ class Severity(str, Enum):
 
 
 class Verdict(str, Enum):
-    """Evaluation verdict for individual rules."""
+    """Evaluation verdict for individual rules and overall validation.
+    
+    Blocking Statuses for Overall PASS:
+      - FAIL: Contribution violates repository policy. Blocks PASS (exit code 1).
+      - ERROR: Validator crashed or execution could not complete. Blocks PASS (exit code 2).
+      - Unexpected SKIP / NA on required rules: Blocks PASS (exit code 2).
+      - WARN (under --strict): Blocks PASS (exit code 1).
+    """
 
     PASS = "PASS"
     FAIL = "FAIL"
+    ERROR = "ERROR"
     WARN = "WARN"
     SKIP = "SKIP"
     NA = "N/A"
@@ -90,8 +98,38 @@ class ValidationReport:
     base_ref: Optional[str] = None
     results: dict[str, RuleResult] = field(default_factory=dict)
     summary: dict[str, int] = field(default_factory=dict)
+    execution_errors: list[str] = field(default_factory=list)
 
     def add_result(self, result: RuleResult) -> None:
+        if result.rule_id in self.results:
+            existing = self.results[result.rule_id]
+            # Severity priority: ERROR > FAIL > WARN > SKIP / NA > PASS
+            priority = {
+                Verdict.ERROR: 4,
+                Verdict.FAIL: 3,
+                Verdict.WARN: 2,
+                Verdict.SKIP: 1,
+                Verdict.NA: 1,
+                Verdict.PASS: 0,
+            }
+            if priority.get(existing.verdict, 0) > priority.get(result.verdict, 0):
+                # Existing has higher severity; keep existing verdict and merge findings
+                existing.findings.extend(result.findings)
+                if not existing.reason and result.reason:
+                    existing.reason = result.reason
+                self.recompute_summary()
+                return
+            elif priority.get(result.verdict, 0) > priority.get(existing.verdict, 0):
+                # New has higher severity; replace verdict and merge findings
+                result.findings.extend(existing.findings)
+                self.results[result.rule_id] = result
+                self.recompute_summary()
+                return
+            else:
+                existing.findings.extend(result.findings)
+                self.recompute_summary()
+                return
+
         self.results[result.rule_id] = result
         self.recompute_summary()
 
@@ -99,6 +137,7 @@ class ValidationReport:
         counts = {
             "pass": 0,
             "fail": 0,
+            "error": 0,
             "warn": 0,
             "skip": 0,
             "na": 0,
@@ -112,6 +151,8 @@ class ValidationReport:
                 counts["pass"] += 1
             elif res.verdict == Verdict.FAIL:
                 counts["fail"] += 1
+            elif res.verdict == Verdict.ERROR:
+                counts["error"] += 1
             elif res.verdict == Verdict.WARN:
                 counts["warn"] += 1
             elif res.verdict == Verdict.SKIP:
@@ -131,8 +172,22 @@ class ValidationReport:
         self.summary = counts
 
     @property
+    def has_execution_errors(self) -> bool:
+        """True if validator crashed, rule output was malformed, or config was invalid."""
+        return (
+            len(self.results) == 0
+            or self.summary.get("error", 0) > 0
+            or len(self.execution_errors) > 0
+        )
+
+    @property
     def has_failures(self) -> bool:
-        return self.summary.get("fail", 0) > 0 or self.summary.get("errors", 0) > 0
+        """True if any rule failed, policy error finding was emitted, or validator crashed."""
+        return (
+            self.summary.get("fail", 0) > 0
+            or self.summary.get("errors", 0) > 0
+            or self.has_execution_errors
+        )
 
     @property
     def has_warnings(self) -> bool:
@@ -142,9 +197,24 @@ class ValidationReport:
     def has_skips(self) -> bool:
         return self.summary.get("skip", 0) > 0
 
-    def exit_code(self, strict: bool = False) -> int:
+    @property
+    def final_verdict(self) -> Verdict:
+        """Centralized, immutable final verdict computation. No individual rule can override this."""
+        if len(self.results) == 0:
+            return Verdict.ERROR
+        if self.has_execution_errors:
+            return Verdict.ERROR
         if self.has_failures:
-            return 1
+            return Verdict.FAIL
+        if self.has_warnings:
+            return Verdict.WARN
+        return Verdict.PASS
+
+    def exit_code(self, strict: bool = False) -> int:
+        if self.has_execution_errors:
+            return 2  # Operational / validator execution error
+        if self.has_failures:
+            return 1  # Policy violation failure
         if strict and (self.has_warnings or self.has_skips):
             return 1
         return 0
@@ -155,6 +225,8 @@ class ValidationReport:
             "category": self.category,
             "slug": self.slug,
             "base_ref": self.base_ref,
+            "final_verdict": self.final_verdict.value,
             "summary": self.summary,
+            "execution_errors": list(self.execution_errors),
             "results": {k: v.to_dict() for k, v in self.results.items()},
         }

@@ -25,12 +25,11 @@ def count_tokens(text: str) -> int:
 
 def main() -> None:
     log_level = os.environ.get("LOG_LEVEL", "info")
-    max_limit = int(os.getenv("MAX_TOKENS_LIMIT", "4096"))
 
     sample_text = f"Welcome {WELCOME_EMOJI}! MergeReady clean verification fixture."
     tokens = count_tokens(sample_text)
     if log_level == "debug":
-        print(f"Debug: Limit is {max_limit}")
+        print(f"Debug: Estimation completed")
     print(f"Tokens estimated: {tokens}")
 
 

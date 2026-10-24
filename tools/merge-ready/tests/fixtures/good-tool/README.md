@@ -64,7 +64,6 @@ Reads local files or standard input, decomposes input text into approximate toke
 | Variable Name | Required | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `LOG_LEVEL` | No | `info` | Logging verbosity level |
-| `MAX_TOKENS_LIMIT` | No | `4096` | Maximum threshold for estimation alerts |
 
 ---
 

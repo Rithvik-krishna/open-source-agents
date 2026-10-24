@@ -159,9 +159,14 @@ class ProjectContext:
         self.base_ref = base_ref
         self.repo_root = self._find_repo_root()
         self.category, self.slug = self._determine_category_and_slug()
+        self.config_errors: list[str] = []
         self.rules_config = self._load_rules_config()
         self.template_readme = self._load_template_readme()
         self.template_env = self._load_template_env()
+        self.limit_exceeded_file_count: bool = False
+        self.oversized_files: list[tuple[str, int]] = []
+        self.rejected_symlinks: list[tuple[str, str]] = []
+        self.unreadable_files: list[tuple[str, str]] = []
         self.files = self._collect_files()
         self.tracked_files = self._collect_tracked_files()
 
@@ -210,10 +215,16 @@ class ProjectContext:
                 try:
                     with open(path, "rb") as f:
                         data = tomllib.load(f)
+                        if not isinstance(data, dict):
+                            self.config_errors.append(f"Invalid format in '{path}': root must be a table.")
+                            continue
                         if "rules" in data:
+                            if not isinstance(data["rules"], dict):
+                                self.config_errors.append(f"Invalid format in '{path}': [rules] must be a table.")
+                                continue
                             return data.get("rules", {})
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.config_errors.append(f"Syntax error in configuration file '{path}': {e}")
         return {}
 
     def _load_template_readme(self) -> str:
@@ -268,31 +279,45 @@ class ProjectContext:
 
     def _collect_files(self) -> list[Path]:
         collected: list[Path] = []
-        is_fixture_target = any(part in ("fixtures", "fixture") for part in self.project_path.parts)
+        # Standard system & virtual environment directories that are never part of source code:
+        ignored_dirs = {".git", "__pycache__", ".venv", "venv", "node_modules", ".pytest_cache"}
         for root, dirs, files in os.walk(self.project_path):
-            ignored_dirs = {".git", "__pycache__", ".venv", "node_modules", ".pytest_cache"}
-            if not is_fixture_target:
-                ignored_dirs.add("fixtures")
             dirs[:] = [d for d in dirs if d not in ignored_dirs]
             for f in files:
                 full_path = Path(root) / f
+                rel_path = full_path.relative_to(self.project_path)
+                posix_str = rel_path.as_posix()
+
                 if full_path.is_symlink():
                     try:
                         resolved = full_path.resolve()
-                        if not str(resolved).startswith(str(self.project_path)):
-                            continue  # External symlink rejected
-                    except Exception:
+                        try:
+                            resolved.relative_to(self.project_path.resolve())
+                        except ValueError:
+                            self.rejected_symlinks.append((posix_str, str(resolved)))
+                            continue
+                    except Exception as e:
+                        self.unreadable_files.append((posix_str, str(e)))
                         continue
-                if full_path.is_file():
-                    try:
-                        if full_path.stat().st_size <= MAX_FILE_SIZE:
-                            collected.append(full_path.relative_to(self.project_path))
-                    except Exception:
-                        pass
+
+                try:
+                    stat_res = full_path.stat()
+                    if stat_res.st_size > MAX_FILE_SIZE:
+                        self.oversized_files.append((posix_str, stat_res.st_size))
+                        continue
+                except Exception as e:
+                    self.unreadable_files.append((posix_str, str(e)))
+                    continue
+
                 if len(collected) >= MAX_FILE_COUNT:
+                    self.limit_exceeded_file_count = True
                     break
-            if len(collected) >= MAX_FILE_COUNT:
+
+                collected.append(rel_path)
+
+            if self.limit_exceeded_file_count:
                 break
+
         return sorted(collected)
 
     def _collect_tracked_files(self) -> set[str]:
@@ -309,13 +334,10 @@ class ProjectContext:
                 check=True,
             )
             tracked = set()
-            is_fixture_target = any(part in ("fixtures", "fixture") for part in self.project_path.parts)
             for line in res.stdout.splitlines():
                 line = line.strip()
                 if line:
                     rel_to_proj = line[len(rel_proj) + 1 :] if line.startswith(rel_proj + "/") else line
-                    if not is_fixture_target and "fixtures/" in rel_to_proj:
-                        continue
                     tracked.add(rel_to_proj)
             return tracked
         except Exception:

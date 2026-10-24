@@ -14,6 +14,13 @@ BIDI_CHARS = set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A))
 TAG_CHARS = set(range(0xE0000, 0xE0080))
 ZERO_WIDTH_WARNINGS = {0x200B, 0x2060}  # zero-width space, word joiner
 
+BINARY_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".bmp", ".tiff",
+    ".pdf", ".zip", ".tar", ".gz", ".7z", ".rar",
+    ".sqlite", ".sqlite3", ".db", ".db3", ".bin", ".exe", ".dll", ".so", ".dylib",
+    ".pyc", ".pyo", ".woff", ".woff2", ".ttf", ".eot",
+}
+
 MODEL_CALL_NAMES = {
     "generate_content",
     "send_message",
@@ -75,11 +82,23 @@ def scan_unicode(text: str) -> list[tuple[Severity, int, int, int, str]]:
             # High severity: Bidi controls and hidden tag characters
             if cp in BIDI_CHARS:
                 findings.append(
-                    (Severity.ERROR, ln, col, cp, f"Bidirectional override/isolate control (U+{cp:04X})")
+                    (
+                        Severity.ERROR,
+                        ln,
+                        col,
+                        cp,
+                        f"Trojan Source bidirectional control character (U+{cp:04X}, CVE-2021-42574) reordering visual display",
+                    )
                 )
             elif cp in TAG_CHARS:
                 findings.append(
-                    (Severity.ERROR, ln, col, cp, f"Hidden Unicode tag character (U+{cp:05X})")
+                    (
+                        Severity.ERROR,
+                        ln,
+                        col,
+                        cp,
+                        f"Plane 14 Unicode tag character (U+{cp:05X}) used for invisible prompt injection against LLMs",
+                    )
                 )
             # Mid-file BOM
             elif cp == 0xFEFF:
@@ -207,15 +226,15 @@ def check_a01(ctx: ProjectContext, config: dict[str, Any]) -> RuleResult:
 
 
 def check_a02(ctx: ProjectContext, config: dict[str, Any]) -> RuleResult:
-    """A02: Detect hidden Unicode, bidirectional overrides, and invisible prompt backdoors."""
+    """A02: Detect Trojan Source bidi overrides (CVE-2021-42574) and Plane 14 prompt injection tags."""
     rule_id = "A02"
     name = "Hidden and Deceptive Unicode"
     source = config.get("source_rule", "Agent Safety Standard & Trojan Source Defense")
     findings: list[Finding] = []
 
-    # Target prompt files, markdown, source code, and config files
+    # Scan all text and prompt files, skipping only known binary formats
     for rel_path in ctx.files:
-        if rel_path.suffix not in (".md", ".txt", ".py", ".js", ".ts", ".json", ".yaml", ".yml", ".toml", ".prompt"):
+        if rel_path.suffix.lower() in BINARY_EXTENSIONS:
             continue
         posix = rel_path.as_posix()
         txt = ctx.read_text(rel_path)

@@ -41,11 +41,14 @@ def format_terminal(report: ValidationReport, use_color: bool = True) -> str:
     s = report.summary
     summary_line = (
         f"Summary: {s.get('pass', 0)} pass · {s.get('fail', 0)} fail · "
-        f"{s.get('warn', 0)} warn · {s.get('skip', 0)} skipped · {s.get('na', 0)} n/a"
+        f"{s.get('error', 0)} error · {s.get('warn', 0)} warn · "
+        f"{s.get('skip', 0)} skipped · {s.get('na', 0)} n/a"
     )
     lines.append(summary_line)
 
-    if report.has_failures:
+    if report.has_execution_errors:
+        lines.append("Result: ERROR — Validator execution encountered runtime or configuration errors.")
+    elif report.has_failures:
         lines.append("Result: FAILED — Please resolve errors before submitting your pull request.")
     elif report.has_warnings:
         lines.append("Result: PASSED WITH WARNINGS — Review recommendations before opening PR.")
@@ -69,13 +72,22 @@ def format_markdown(report: ValidationReport) -> str:
         lines.append(f"**Base Git Reference**: `{report.base_ref}`\n")
 
     s = report.summary
-    status_emoji = "❌ **FAILED**" if report.has_failures else ("⚠️ **PASSED WITH WARNINGS**" if report.has_warnings else "✅ **PASSED**")
+    if report.has_execution_errors:
+        status_emoji = "💥 **VALIDATOR ERROR**"
+    elif report.has_failures:
+        status_emoji = "❌ **FAILED**"
+    elif report.has_warnings:
+        status_emoji = "⚠️ **PASSED WITH WARNINGS**"
+    else:
+        status_emoji = "✅ **PASSED**"
+
     lines.append(f"### Verdict: {status_emoji}\n")
 
     lines.append("| Metric | Count |")
     lines.append("| :--- | :--- |")
     lines.append(f"| Passed Rules | {s.get('pass', 0)} |")
     lines.append(f"| Failing Rules | {s.get('fail', 0)} |")
+    lines.append(f"| Execution Error Rules | {s.get('error', 0)} |")
     lines.append(f"| Warning Rules | {s.get('warn', 0)} |")
     lines.append(f"| Skipped Rules | {s.get('skip', 0)} |")
     lines.append(f"| Total Findings | {s.get('findings_total', 0)} (Errors: {s.get('errors', 0)}, Warnings: {s.get('warnings', 0)}) |\n")
@@ -101,7 +113,18 @@ def format_markdown(report: ValidationReport) -> str:
     lines.append("| Rule ID | Rule Name | Verdict | Notes |")
     lines.append("| :--- | :--- | :--- | :--- |")
     for res in report.results.values():
-        badge = "✅ PASS" if res.verdict == Verdict.PASS else ("❌ FAIL" if res.verdict == Verdict.FAIL else ("⚠️ WARN" if res.verdict == Verdict.WARN else ("⏭️ SKIP" if res.verdict == Verdict.SKIP else "⚪ N/A")))
+        if res.verdict == Verdict.PASS:
+            badge = "✅ PASS"
+        elif res.verdict == Verdict.FAIL:
+            badge = "❌ FAIL"
+        elif res.verdict == Verdict.ERROR:
+            badge = "💥 ERROR"
+        elif res.verdict == Verdict.WARN:
+            badge = "⚠️ WARN"
+        elif res.verdict == Verdict.SKIP:
+            badge = "⏭️ SKIP"
+        else:
+            badge = "⚪ N/A"
         note = res.reason or (f"{len(res.findings)} finding(s)" if res.findings else "Clean")
         lines.append(f"| **{res.rule_id}** | {res.name} | {badge} | {note} |")
 

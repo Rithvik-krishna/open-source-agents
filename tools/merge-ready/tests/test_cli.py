@@ -63,19 +63,17 @@ def test_cli_good_tool_markdown(capsys):
     assert "### Verdict:" in captured.out
 
 
-def test_cli_bad_agent_exit_code(capsys):
+def test_cli_bad_agent_exit_code(defective_agent_dir: Path, capsys):
     """Verify defective fixture returns exit code 1."""
-    bad_dir = str(FIXTURES_DIR / "bad-agent")
-    code = main(["check", bad_dir])
+    code = main(["check", str(defective_agent_dir)])
     assert code == 1
     captured = capsys.readouterr()
     assert "FAILED" in captured.out
 
 
-def test_cli_strict_mode():
+def test_cli_strict_mode(defective_agent_dir: Path):
     """Verify --strict fails when warnings exist."""
-    bad_dir = str(FIXTURES_DIR / "bad-agent")
-    code = main(["check", bad_dir, "--strict"])
+    code = main(["check", str(defective_agent_dir), "--strict"])
     assert code == 1
 
 
@@ -94,3 +92,53 @@ def test_cli_invalid_path():
     """Verify non-existent project directory returns exit code 2."""
     code = main(["check", "non_existent_folder_xyz_123"])
     assert code == 2
+
+
+def test_cli_json_serialization_failure(monkeypatch, capsys):
+    """Verify that report formatting / serialization failure returns exit code 2."""
+    def fail_json(report):
+        raise TypeError("Simulated JSON serialization crash")
+
+    monkeypatch.setattr("merge_ready.cli.format_json", fail_json)
+    code = main(["check", str(FIXTURES_DIR / "good-tool"), "--format", "json"])
+    assert code == 2
+    captured = capsys.readouterr()
+    assert "Operational error" in captured.err
+
+
+def test_cli_output_file_write_failure(capsys, tmp_path: Path):
+    """Verify that failing to write output file returns exit code 2."""
+    # Passing a directory path as the output file path causes write_text to fail
+    code = main(["check", str(FIXTURES_DIR / "good-tool"), "--output", str(tmp_path)])
+    assert code == 2
+    captured = capsys.readouterr()
+    assert "Error writing report" in captured.err
+
+
+def test_cli_unexpected_top_level_exception(monkeypatch, capsys):
+    """Verify that an unexpected top-level CLI crash returns exit code 2 without uncaught tracebacks."""
+    def crash_parser():
+        raise RuntimeError("Fatal argument parsing disaster")
+
+    monkeypatch.setattr("merge_ready.cli.build_parser", crash_parser)
+    code = main(["check", "test"])
+    assert code == 2
+    captured = capsys.readouterr()
+    assert "Unexpected CLI error" in captured.err
+
+
+def test_cli_error_verdict_exit_code_2(monkeypatch, capsys):
+    """Verify that check execution errors trigger Result: ERROR and exit code 2."""
+    from merge_ready.checks import CHECK_REGISTRY
+
+    def crash_l01(ctx, config):
+        raise RuntimeError("Simulated crash in layout rule")
+
+    new_registry = [(r, crash_l01 if r == "L01" else fn) for r, fn in CHECK_REGISTRY]
+    monkeypatch.setattr("merge_ready.checks.CHECK_REGISTRY", new_registry)
+
+    code = main(["check", str(FIXTURES_DIR / "good-tool")])
+    assert code == 2
+    captured = capsys.readouterr()
+    assert "Result: ERROR" in captured.out
+

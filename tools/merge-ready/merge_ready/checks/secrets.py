@@ -47,8 +47,15 @@ PLACEHOLDER_SUBSTRINGS = [
     "my-key",
 ]
 
-FORBIDDEN_TRACKED_EXTENSIONS = {".sqlite", ".db", ".pyc"}
-FORBIDDEN_TRACKED_DIRS = {".venv", "venv", "node_modules", "__pycache__"}
+FORBIDDEN_TRACKED_EXTENSIONS = {".sqlite", ".sqlite3", ".db", ".db3", ".pyc", ".pyo"}
+FORBIDDEN_TRACKED_DIRS = {".venv", "venv", "node_modules", "__pycache__", ".pytest_cache"}
+
+BINARY_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".bmp", ".tiff",
+    ".pdf", ".zip", ".tar", ".gz", ".7z", ".rar",
+    ".sqlite", ".sqlite3", ".db", ".db3", ".bin", ".exe", ".dll", ".so", ".dylib",
+    ".pyc", ".pyo", ".woff", ".woff2", ".ttf", ".eot",
+}
 
 
 def shannon_entropy(data: str) -> float:
@@ -67,11 +74,33 @@ def shannon_entropy(data: str) -> float:
 
 
 def redact_secret(val: str) -> str:
-    """Safely redact secret values in findings and logs."""
-    clean = val.strip().strip("'\"")
-    if len(clean) <= 8:
-        return "[REDACTED]"
-    return f"{clean[:4]}...{clean[-4:]} [REDACTED]"
+    """Safely redact secret values in findings, error messages, and logs."""
+    if not val:
+        return ""
+    text = str(val)
+
+    # 1. Scan and redact any embedded known key patterns
+    for _, pat in KNOWN_KEY_PATTERNS:
+        def repl(match: re.Match[str]) -> str:
+            matched = match.group(0)
+            if is_placeholder(matched):
+                return matched
+            if len(matched) <= 8:
+                return "[REDACTED]"
+            return f"{matched[:4]}...{matched[-4:]} [REDACTED]"
+        text = pat.sub(repl, text)
+
+    # 2. If the string itself was passed as a single candidate secret token
+    if text == str(val):
+        clean = text.strip().strip("'\"")
+        if len(clean) > 8 and not is_placeholder(clean):
+            if shannon_entropy(clean) >= 4.0 and len(clean) >= 20 and not UUID_PATTERN.match(clean) and not HEX_HASH_PATTERN.match(clean):
+                return f"{clean[:4]}...{clean[-4:]} [REDACTED]"
+            return f"{clean[:4]}...{clean[-4:]} [REDACTED]"
+        elif len(clean) <= 8:
+            return "[REDACTED]"
+
+    return text
 
 
 def is_placeholder(val: str) -> bool:
@@ -95,12 +124,17 @@ def check_s01(ctx: ProjectContext, config: dict[str, Any]) -> RuleResult:
     source = config.get("source_rule", "CONTRIBUTING.md Quality & Security Standards")
     findings: list[Finding] = []
 
-    # 1. Check for committed or present .env files (tracked in git or in non-git fixture)
+    # 1. Check for committed or present real environment files (.env*)
     all_env_candidates = set(ctx.tracked_files) | {p.as_posix() for p in ctx.files}
     for cand in all_env_candidates:
         posix = cand.replace("\\", "/")
         name_only = posix.split("/")[-1]
-        if name_only in (".env", ".env.local", ".env.production", ".env.secret"):
+        is_env_file = (
+            name_only == ".env"
+            or (name_only.startswith(".env.") and not name_only.endswith(".example"))
+            or (name_only.endswith(".env") and not name_only.endswith(".example"))
+        )
+        if is_env_file and name_only != ".env.example":
             findings.append(
                 Finding(
                     rule_id=rule_id,
@@ -117,7 +151,7 @@ def check_s01(ctx: ProjectContext, config: dict[str, Any]) -> RuleResult:
     for rel_path in ctx.files:
         posix_str = rel_path.as_posix()
         # Skip binary / non-text
-        if rel_path.suffix in (".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".zip", ".tar", ".gz"):
+        if rel_path.suffix.lower() in BINARY_EXTENSIONS:
             continue
 
         content = ctx.read_text(rel_path)
@@ -203,7 +237,7 @@ def check_s02(ctx: ProjectContext, config: dict[str, Any]) -> RuleResult:
     source = config.get("source_rule", "CONTRIBUTING.md Step 8")
     findings: list[Finding] = []
 
-    files_to_check = ctx.tracked_files if ctx.tracked_files else {p.as_posix() for p in ctx.files}
+    files_to_check = set(ctx.tracked_files) | {p.as_posix() for p in ctx.files}
 
     for path_str in files_to_check:
         posix = path_str.replace("\\", "/")

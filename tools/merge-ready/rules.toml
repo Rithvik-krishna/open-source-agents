@@ -19,7 +19,7 @@ source_rule = "CONTRIBUTING.md Directory & Naming Rules"
 name = "Required File Standards"
 severity = "ERROR"
 category = "layout"
-description = "Project must include README.md, .env.example, .gitignore, and a dependency manifest."
+description = "Project must include README.md, .env.example, .gitignore, manifest, and adhere to scan size/file limits."
 source_rule = "CONTRIBUTING.md Step 5 & Step 7"
 
 [rules.D01]
@@ -103,7 +103,7 @@ source_rule = "CONTRIBUTING.md Quality & Security Standards (Safety & Respect)"
 name = "Hidden and Deceptive Unicode"
 severity = "ERROR"
 category = "safety"
-description = "Detects hidden bidirectional overrides, Unicode tag characters, and suspicious zero-width markers."
+description = "Detects Trojan Source bidirectional overrides (CVE-2021-42574) and Plane 14 Unicode tag prompt injection attacks."
 source_rule = "Agent Safety Standard & Trojan Source Defense"
 
 [rules.A03]
